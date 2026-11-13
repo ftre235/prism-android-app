@@ -155,6 +155,11 @@ class PrismViewModel(app: Application) : AndroidViewModel(app) {
     fun setSpeed(s: Float) = _ui.update { it.copy(clock = it.clock.withSpeed(s)) }
     fun speakTest() = pleos.speak("PRISM 음성 안내 테스트입니다")
 
+    /** 경고 카드의 '음성 안내' 버튼. Pleos Context Mode 에서만 SDK 를 부른다. */
+    fun speak(text: String) {
+        if (_ui.value.mode == AppMode.PLEOS_CONTEXT) pleos.speak("시뮬레이션 안내. $text")
+    }
+
     /** 주행 화면에서 WARNING 으로 바뀌는 순간 한 번만 음성 안내 (Pleos Context Mode). */
     private fun announceWarningIfNeeded() {
         val s = _ui.value

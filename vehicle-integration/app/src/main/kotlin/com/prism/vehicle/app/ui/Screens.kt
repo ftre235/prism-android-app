@@ -1,7 +1,15 @@
 package com.prism.vehicle.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -54,7 +62,7 @@ import com.prism.vehicle.replay.Snapshot
 fun PrismApp(vm: PrismViewModel) {
     val s by vm.ui.collectAsStateWithLifecycle()
     MaterialTheme(colorScheme = darkColorScheme()) {
-        Surface(Modifier.fillMaxSize(), color = Color(0xFF0E1013), contentColor = Color(0xFFE8EAED)) {
+        Surface(Modifier.fillMaxSize(), color = RadarBg, contentColor = Color(0xFFE8EAED)) {
             Column(Modifier.fillMaxSize().padding(16.dp)) {
                 TopBar(s)
                 Spacer(Modifier.height(12.dp))
@@ -94,6 +102,7 @@ private fun Adaptive(sideWidth: Dp, main: @Composable (Modifier) -> Unit, side: 
 private fun TopBar(s: UiState) {
     Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("PRISM", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+        Text("RISK RADAR", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = RadarAccent)
         Badge(s.mode.label, Color(0xFF37474F))
         // 지시서: 실시간 추론이 아닌 offline replay 임을 화면에 항상 표시
         Badge("시뮬레이션 결과 재생 · 실시간 감지 아님", Color(0xFF4E342E))
@@ -164,15 +173,115 @@ private fun statusColor(st: SupportStatus) = when (st) {
     SupportStatus.UNTESTED, SupportStatus.PENDING -> Color.Gray
 }
 
+/**
+ * 주행 화면: 왼쪽 메뉴 · 가운데 원근 도로(주행) 또는 04 레이더(분석) · 오른쪽 경고/향후 5초/원인/조작.
+ * 주행 중에는 짧은 안내만 두고, 시간 이동·세부 근거는 정차 후 리플레이로 분리한다.
+ */
 @Composable
 private fun DriveScreen(s: UiState, vm: PrismViewModel) {
     val t = s.timeline ?: return
     val snap = t.snapshotAt(s.clock.positionMs)
-    Adaptive(560.dp, main = { RadarSlot(s, snap, detail = false, modifier = it) }) { sideMod ->
-        // 주행 중 화면: 짧고 제한된 안내만. 세부 원인·시간 이동은 정차 후 리플레이로 분리.
-        Column(sideMod.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(t.manifest.title, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            LevelBanner(snap)
+    var analysis by rememberSaveable { mutableStateOf(false) }
+    val laneWidth = if (t.manifest.mock) 3.6 else 4.0
+    val view: @Composable (Modifier) -> Unit = { m ->
+        Box(m.clip(RoundedCornerShape(18.dp)).background(RadarPanel)) {
+            if (analysis) RadarSlot(s, snap, detail = false, modifier = Modifier.fillMaxSize())
+            else PerspectiveRoad(snap, laneWidth, Modifier.fillMaxSize())
+            snap.vehicle?.vehicles?.firstOrNull { it.id == t.manifest.egoId }?.let { ego ->
+                Column(Modifier.align(Alignment.TopStart).padding(20.dp)) {
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        Text("${RadarText.speedKmh(ego)}", fontSize = 56.sp, fontWeight = FontWeight.Bold)
+                        Text(" km/h", fontSize = 22.sp, modifier = Modifier.padding(bottom = 10.dp))
+                    }
+                    Text("자차 속도 · 03 시뮬레이션", fontSize = 13.sp, color = Color(0xFFB8C0D4))
+                }
+            }
+            Row(
+                Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(16.dp).horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                RadarLegend()
+                ViewModeToggle(analysis, { analysis = it })
+            }
+        }
+    }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        if (maxWidth >= 860.dp) {
+            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                NavRail(s, vm, Modifier.width(84.dp).fillMaxHeight())
+                view(Modifier.weight(1f).fillMaxHeight())
+                RiskSidePanel(s, vm, snap, Modifier.width(420.dp).fillMaxHeight())
+            }
+        } else {
+            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                view(Modifier.fillMaxWidth().weight(1f))
+                RiskSidePanel(s, vm, snap, Modifier.fillMaxWidth().weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun NavRail(s: UiState, vm: PrismViewModel, modifier: Modifier) {
+    Column(modifier.background(RadarPanel, RoundedCornerShape(18.dp)).padding(vertical = 12.dp, horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        NavItem("실시간", selected = true, enabled = true) {}
+        NavItem("리플레이", selected = false, enabled = s.replayBlockedReason == null, onClick = vm::openReplay)
+        NavItem("시나리오", selected = false, enabled = true, onClick = vm::back)
+    }
+}
+
+@Composable
+private fun NavItem(label: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.fillMaxWidth().height(64.dp)
+            .background(if (selected) RadarAccent else Color.Transparent, RoundedCornerShape(14.dp))
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { Text(label, fontSize = 14.sp, color = if (enabled) Color.White else Color(0xFF5C6479), fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal) }
+}
+
+@Composable
+private fun RiskSidePanel(s: UiState, vm: PrismViewModel, snap: Snapshot, modifier: Modifier) {
+    val t = s.timeline ?: return
+    val level = snap.topLevel
+    Column(modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        // 경고 카드: 02 RiskFrame 최고 등급과 원인 문장
+        val tint = if (snap.risk == null && !snap.stale) Color(0xFF3A4258) else levelColor(level)
+        Column(
+            Modifier.fillMaxWidth().background(tint.copy(alpha = 0.16f), RoundedCornerShape(18.dp)).border(1.5.dp, tint, RoundedCornerShape(18.dp)).padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(RadarText.levelLabel(if (snap.risk == null && !snap.stale) null else level), Modifier.background(tint, RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 4.dp), color = Color(0xFF111522), fontWeight = FontWeight.Bold)
+                Text(levelText(snap), Modifier.testTag("level_banner"), fontSize = 15.sp, color = Color(0xFFCFD6E6))
+            }
+            Text(RadarText.headline(snap), fontSize = 22.sp, fontWeight = FontWeight.Bold, lineHeight = 30.sp)
+            if (s.mode == AppMode.PLEOS_CONTEXT) OutlinedButton(onClick = { vm.speak(RadarText.headline(snap)) }) { Text("음성 안내") }
+        }
+        SideCard("위험 예측 (향후 5초)") {
+            HorizonTimeline(RadarText.horizonLevels(snap))
+            Text(
+                if (snap.risk == null) "02 위험 엔진 결과가 없어 예측 단계를 표시하지 않습니다." else "02 위험 영역(risk_zones)의 시점별 등급 · 영역이 없는 시점은 –",
+                fontSize = 12.sp, color = Color(0xFF8A93A8),
+            )
+        }
+        SideCard("주요 원인") {
+            val objs = snap.risk?.riskObjects.orEmpty().filter { it.riskLevel != RiskLevel.NORMAL }.sortedByDescending { RadarText.rank(it.riskLevel) }
+            val vs = snap.vehicle?.vehicles.orEmpty()
+            if (objs.isEmpty()) Text(if (snap.risk == null) "02 RiskFrame 없음" else "주의 이상 차량 없음", fontSize = 14.sp, color = Color(0xFF8A93A8))
+            objs.forEach { o ->
+                val side = RadarText.side(vs.firstOrNull { it.id == o.vehicleId })
+                val reasons = o.reasonCodes.joinToString(" · ") { RadarText.reasonText(it, side) }.ifEmpty { "원인 코드 없음" }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(10.dp).background(levelColor(o.riskLevel), CircleShape))
+                    Text("  ${o.vehicleId} · $reasons${o.ttcS?.let { " · TTC %.1fs".format(it) } ?: ""}", fontSize = 14.sp)
+                }
+            }
+            RadarText.frontRelative(vs, t.manifest.egoId, if (t.manifest.mock) 3.6 else 4.0)?.let { (v, rel) ->
+                Text("전방 ${v.id} %.0fm · 상대속도 %+d km/h (03 값)".format(v.y, rel), fontSize = 13.sp, color = Color(0xFF9AA3B8))
+            }
+        }
+        SideCard(t.manifest.title) {
             Text("%.1f / %.1f s".format(s.clock.positionMs / 1000.0, t.durationMs / 1000.0), fontSize = 16.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PlayPause(s.clock, vm)
@@ -181,19 +290,26 @@ private fun DriveScreen(s: UiState, vm: PrismViewModel) {
             if (s.mode == AppMode.SIMULATION) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(checked = s.simulatedParked, onCheckedChange = vm::setSimulatedParked, modifier = Modifier.testTag("parked"))
-                    Text("  정차(P) 가정 — Simulation Mode 전용")
+                    Text("  정차(P) 가정 — Simulation Mode 전용", fontSize = 14.sp)
                 }
             }
             Button(onClick = vm::openReplay, enabled = s.replayBlockedReason == null, modifier = Modifier.testTag("open_replay")) { Text("정차 후 리플레이") }
-            s.replayBlockedReason?.let { Text(it, fontSize = 13.sp, color = Color.Gray) }
+            s.replayBlockedReason?.let { Text(it, fontSize = 12.sp, color = Color.Gray) }
         }
     }
 }
 
 @Composable
-private fun LevelBanner(snap: Snapshot) {
+private fun SideCard(title: String, content: @Composable () -> Unit) {
+    Column(Modifier.fillMaxWidth().background(RadarPanel, RoundedCornerShape(18.dp)).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(title, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        content()
+    }
+}
+
+private fun levelText(snap: Snapshot): String {
     val level = snap.topLevel
-    val text = when {
+    return when {
         snap.stale -> "데이터 누락 — 현재 상태 알 수 없음"
         snap.risk == null -> "위험 정보 없음 (RiskFrame 없음)"
         level == RiskLevel.WARNING -> "WARNING · 주변 차량 위험"
@@ -201,9 +317,14 @@ private fun LevelBanner(snap: Snapshot) {
         level == RiskLevel.UNKNOWN -> "UNKNOWN · 판단 불가"
         else -> "NORMAL"
     }
+}
+
+@Composable
+private fun LevelBanner(snap: Snapshot) {
+    val level = snap.topLevel
     val bg = if (level == RiskLevel.UNKNOWN) Color(0xFF263238) else riskColor(level).copy(alpha = 0.35f)
     Box(Modifier.fillMaxWidth().background(bg, RoundedCornerShape(8.dp)).padding(16.dp).testTag("level_banner")) {
-        Text(text, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Text(levelText(snap), fontSize = 24.sp, fontWeight = FontWeight.Bold)
     }
 }
 
